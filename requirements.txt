@@ -1,7 +1,0 @@
-streamlit
-pandas
-yfinance
-requests
-beautifulsoup4
-st-gsheets-connection
-numpy
