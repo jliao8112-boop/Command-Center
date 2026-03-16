@@ -1,1 +1,7 @@
-GEMINI_API_KEY = "AIzaSyDFLkAcP0GDAC352ZdMbW61tsOdyqnLviM"
+streamlit
+pandas
+yfinance
+requests
+beautifulsoup4
+st-gsheets-connection
+numpy
