@@ -151,7 +151,7 @@ def main():
     with col1:
         m_sid = st.text_input("股票代碼", value="1815").upper().strip()
     with col2:
-        m_name = st.text_input("股票名稱", value="富喬")
+        m_name = st.text_input("股票名稱", value="")
 
     st.sidebar.info("💡 **「抗封鎖模式」**啟動。系統已掛載記憶體快取，確保穩定抓取上櫃與上市即時報價，不再觸發 Rate Limit。")
 
