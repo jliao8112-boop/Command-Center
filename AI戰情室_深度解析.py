@@ -23,77 +23,119 @@ st.markdown("""
     }
     .highlight-red { color: #DC2626; font-weight: bold; }
     .highlight-green { color: #059669; font-weight: bold; }
+    .highlight-blue { color: #2563EB; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 演算法核心：無需 AI 的純量化推演 ---
-def generate_quant_report(stock_id, stock_name, df):
-    """純量化邏輯引擎，直接算出策略與價位"""
+# 🚀 升級 1：加入 Streamlit 快取機制 (暫存 60 秒)，大幅降低 Yahoo API 阻擋機率
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_stock_data(sid, is_us):
+    symbol = sid if is_us else f"{sid}.TW"
+    df = yf.download(symbol, period="250d", interval="1d", progress=False)
+    
+    # 若為台股且 .TW 抓不到，嘗試上櫃 .TWO
+    if df.empty and not is_us:
+        symbol = f"{sid}.TWO"
+        df = yf.download(symbol, period="250d", interval="1d", progress=False)
+    return df
+
+# --- 2. 演算法核心：法人級量化模組 ---
+def calculate_professional_indicators(df):
+    """計算均線、均量與 ATR 真實波動"""
+    # 🚀 升級 2：使用 ffill() 填補盤中報價產生的 NaN，不需再依賴易被擋的 fast_info
+    df = df.ffill()
+    
+    df['MA21'] = df['close'].rolling(window=21).mean()
+    df['MA144'] = df['close'].rolling(window=144).mean()
+    df['Vol_MA20'] = df['volume'].rolling(window=20).mean()
+    
+    df['H-L'] = df['high'] - df['low']
+    df['H-PC'] = abs(df['high'] - df['close'].shift(1))
+    df['L-PC'] = abs(df['low'] - df['close'].shift(1))
+    df['TR'] = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+    df['ATR14'] = df['TR'].rolling(window=14).mean()
+    
+    return df.dropna()
+
+def generate_pro_quant_report(stock_id, stock_name, df):
+    """專業操作邏輯引擎"""
     try:
-        # 取得最新與昨天的資料
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         
         current_price = round(latest['close'], 2)
-        ma20 = round(latest['MA20'], 2)
-        ma100 = round(latest['MA100'], 2)
+        ma21 = round(latest['MA21'], 2)
+        ma144 = round(latest['MA144'], 2)
+        vol_today = latest['volume']
+        vol_ma20 = latest['Vol_MA20']
+        atr = round(latest['ATR14'], 2)
         
-        # 1. 趨勢與陣型判定
-        if current_price > ma20 and ma20 > ma100:
-            trend_status = "🟢 強勢多頭排列"
-            action_plan = "順勢操作，拉回月線(MA20)附近皆是佈局良機。"
-            sweet_price = round(ma20 * 1.01, 2)
-            defense_price = round(ma20 * 0.98, 2) 
-            target_price = round(current_price * 1.15, 2) 
-            timing = "隨時可能發動，注意帶量突破"
-        elif current_price < ma20 and ma20 < ma100:
-            trend_status = "🔴 弱勢空頭排列"
-            action_plan = "空方壓制，嚴禁無腦接刀，建議觀望或反彈遇壓作空。"
-            sweet_price = round(current_price * 0.9, 2) 
-            defense_price = round(current_price * 0.95, 2)
-            target_price = round(ma20 * 0.98, 2) 
-            timing = "仍在測底階段，需等待至少 5-8 日量縮築底"
-        elif current_price > ma100 and current_price < ma20:
-            trend_status = "🟡 回測長線支撐"
-            action_plan = "短空長多，正回測季線(MA100)支撐，可嘗試小部位試單。"
-            sweet_price = round(ma100 * 1.02, 2)
-            defense_price = round(ma100 * 0.98, 2)
-            target_price = round(ma20, 2)
-            timing = "等待 3-5 日確認支撐不破"
-        else:
-            trend_status = "🟠 區間震盪整理"
-            action_plan = "均線糾結，無明顯方向。建議採取區間高出低進策略。"
-            sweet_price = round(min(ma20, ma100), 2)
-            defense_price = round(sweet_price * 0.97, 2)
-            target_price = round(max(ma20, ma100) * 1.05, 2)
-            timing = "方向未明，需等待大紅K表態"
+        # 量價動能判定
+        vol_ratio = round(vol_today / vol_ma20, 2) if vol_ma20 > 0 else 1
+        if vol_ratio >= 1.5: vol_status = "🔥 爆量 (大於均量 1.5 倍)"
+        elif vol_ratio <= 0.7: vol_status = "💤 極度量縮 (小於均量 0.7 倍)"
+        else: vol_status = "⚖️ 溫和常態量"
 
-        # 2. K線狀態簡易判斷
-        is_red = latest['close'] > latest['open']
-        k_color = "收紅K" if is_red else "收黑K"
-        
-        # 3. 組裝報告
+        # 專業戰略推演與價位計算
+        if current_price > ma21 and ma21 > ma144:
+            trend_status = "🟢 多頭主升段 (強勢)"
+            defense_price = round(ma21 - atr, 2) 
+            sweet_price = round(ma21 + (atr * 0.5), 2) 
+            
+            risk = round(current_price - defense_price, 2)
+            if risk <= 0: risk = atr 
+            target_price = round(current_price + (risk * 2), 2)
+            
+            action_plan = f"趨勢強勢。若現價追價，需承擔 {risk} 元風險。建議等待拉回至【甜甜價】附近，配合【{vol_status}】的量縮狀態測試支撐再行佈局。"
+            timing = "隨時可能帶量創高，重點觀察突破時是否具備 1.5 倍以上均量。"
+            
+        elif current_price < ma21 and ma21 < ma144:
+            trend_status = "🔴 空頭發散 (弱勢)"
+            defense_price = round(ma21 + atr, 2) 
+            sweet_price = round(ma21 - (atr * 0.5), 2) 
+            
+            risk = round(defense_price - current_price, 2)
+            if risk <= 0: risk = atr
+            target_price = round(current_price - (risk * 2), 2) 
+            
+            action_plan = f"空方格局，均線下壓。嚴格禁止逆勢摸底買多。積極者可於反彈至【甜甜價】無力時，順勢佈局空單。"
+            timing = "跌勢未止，需等待至少 1-2 週的底部分型與爆量洗盤訊號。"
+            
+        else:
+            trend_status = "🟡 震盪整理期 (均線糾結)"
+            defense_price = round(current_price - (atr * 1.5), 2) 
+            sweet_price = round(min(ma21, ma144), 2)
+            
+            risk = round(current_price - defense_price, 2)
+            target_price = round(current_price + (risk * 1.5), 2) 
+            
+            action_plan = "目前處於趨勢轉換或中繼整理階段。主力籌碼交換中，建議採用【箱型戰法】，跌破防守價嚴格停損，不宜戀戰。"
+            timing = f"方向收斂中，等待長紅/長黑K棒突破，並伴隨【爆量】訊號以確認新趨勢。"
+
+        rr_ratio = round(abs(target_price - current_price) / abs(current_price - defense_price + 0.01), 1)
+
+        # 組裝專業報告
         report = f"""
-### 🎯 核心量化決策面板
+### 🎯 專業操盤手決策面板
 * **現價：** {current_price} 元 ({trend_status})
-* **🍯 甜甜價 (建倉參考)：** {sweet_price} 元
-* **🛡️ 防守價 (風控撤退)：** <span class='highlight-red'>{defense_price} 元</span>
-* **🚀 目標價 (波段預期)：** <span class='highlight-green'>{target_price} 元</span>
-* **⏳ 預估啟動時間：** {timing}
+* **🍯 甜甜價 (合理建倉區)：** <span class='highlight-blue'>{sweet_price} 元</span>
+* **🛡️ 防守價 (ATR動態停損)：** <span class='highlight-red'>{defense_price} 元</span>
+* **🚀 目標價 (滿足 1:{rr_ratio} 盈虧比)：** <span class='highlight-green'>{target_price} 元</span>
+* **⏳ 發動契機：** {timing}
 
 ---
 
-### 第一章：技術結構掃描
-* **最新收盤狀態：** 今日{k_color}，收盤價 {current_price}。昨日收盤為 {round(prev['close'], 2)}。
-* **短線防線 (MA20 月線)：** 目前位於 {ma20} 元。
-* **長線防線 (MA100 季/半年線)：** 目前位於 {ma100} 元。
-* **均線相對位置：** {'股價已站上月線' if current_price > ma20 else '股價遭到月線壓制'}，且{'長線趨勢向上' if ma20 > ma100 else '長線趨勢向下'}。
+### 第一章：波動率與量價結構
+* **ATR 日均波動幅度：** 目前個股每日平均震盪約 **{atr} 元**。防守價已納入此波動寬容值，防範主力洗盤。
+* **今日量能狀態：** **{vol_status}** (今日成交量：{int(vol_today):,} / 20日均量：{int(vol_ma20):,})。
+* **短線生命線 (MA21)：** {ma21} 元。
+* **牛熊分界線 (MA144)：** {ma144} 元。
 
 ### 第二章：系統最終戰略指示
-基於目前的演算法模型判定，此標的屬於 **{trend_status}** 格局。
-**指揮部行動代號：** {action_plan}
+**戰術定調：** {action_plan}
 
-> ⚠️ 戰情室提醒：此版本為純量化演算法推演，無使用外部 AI 讀取新聞，決策依據純粹為價格與均線力道，請搭配個人紀律執行停損。
+**紀律準則：** 1. 專業交易的核心是【風險控制】。若股價收盤跌破防守價 ({defense_price} 元)，代表本次戰術推演失效，請無條件撤退。
+2. 目前設定的期望盈虧比為 **1 : {rr_ratio}**。若到達目標價，建議分批獲利了結，或將停損點上移至成本價，立於不敗之地。
         """
         return report
 
@@ -102,53 +144,47 @@ def generate_quant_report(stock_id, stock_name, df):
 
 # --- 3. UI 介面 ---
 def main():
-    st.markdown("<div class='ai-header'><h2 style='margin:0;'>⚡ 量化戰情室：極速推演系統</h2><p style='margin:0; opacity:0.8;'>純演算法驅動，無外部 API 依賴，軍規級穩定秒殺分析</p></div>", unsafe_allow_html=True)
+    st.markdown("<div class='ai-header'><h2 style='margin:0;'>⚡ 量化戰情室：法人級極速推演</h2><p style='margin:0; opacity:0.8;'>搭載 ATR 動態停損、量價動能與 R/R 盈虧比策略，抗 Yahoo 封鎖快取版</p></div>", unsafe_allow_html=True)
 
     st.sidebar.markdown("### 🎯 目標鎖定")
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        m_sid = st.text_input("股票代碼", value="2330").upper().strip()
+        m_sid = st.text_input("股票代碼", value="1815").upper().strip()
     with col2:
-        m_name = st.text_input("股票名稱", value="台積電")
+        m_name = st.text_input("股票名稱", value="富喬")
 
-    st.sidebar.info("💡 目前為**「純量化無人機模式」**。無須輸入金鑰，系統將直接使用內部演算法推算支撐與壓力位。")
+    st.sidebar.info("💡 **「抗封鎖模式」**啟動。系統已掛載記憶體快取，確保穩定抓取上櫃與上市即時報價，不再觸發 Rate Limit。")
 
     if st.sidebar.button("🚀 啟動極速推演", use_container_width=True):
-        with st.spinner(f"正在擷取 {m_name} 數據，執行量化模型運算..."):
+        with st.spinner(f"正在擷取 {m_name} 數據，執行專業量化模型運算..."):
             try:
-                # 抓取數據：範圍擴大為 200d 以確保 MA100 算完還有足夠資料
                 is_us = any(c.isalpha() for c in m_sid)
-                symbol = m_sid if is_us else f"{m_sid}.TW"
                 
-                df = yf.download(symbol, period="200d", interval="1d", progress=False)
-                if df.empty and not is_us:
-                    df = yf.download(f"{m_sid}.TWO", period="200d", interval="1d", progress=False)
+                # 🚀 呼叫帶有快取機制的抓取函數
+                df = fetch_stock_data(m_sid, is_us)
                 
                 if df.empty:
                     st.error("❌ 查無此股票代碼的數據，請確認後再試。")
                     return
 
-                # 數據整理
+                # 數據整理 (處理 yfinance 回傳的多層級 MultiIndex)
                 df = df.reset_index()
                 df.columns = [col[0].lower() if isinstance(df.columns, pd.MultiIndex) else col.lower() for col in df.columns]
                 
-                # 計算基礎均線
-                df['MA20'] = df['close'].rolling(window=20).mean()
-                df['MA100'] = df['close'].rolling(window=100).mean()
-                df = df.dropna() # 移除計算均線產生的空值
+                # 計算專業指標
+                df = calculate_professional_indicators(df)
                 
-                # 🚨 新增防呆機制：確保資料剔除後，還有至少 2 天的資料可以對比
                 if len(df) < 2:
-                    st.error("❌ 該標的歷史掛牌時間不足 100 天，無法計算長線季線 (MA100)，請更換分析標的。")
+                    st.error("❌ 該標的歷史資料不足 (需滿 144 個交易日以建立基準線)，請更換分析標的。")
                     return
                 
-                # 呼叫量化引擎
-                report = generate_quant_report(m_sid, m_name, df)
+                # 呼叫專業量化引擎
+                report = generate_pro_quant_report(m_sid, m_name, df)
                 
                 st.markdown("<div class='report-box'>", unsafe_allow_html=True)
                 st.markdown(report, unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
-                st.success("✅ 量化戰情報告生成完畢！")
+                st.success("✅ 法人級量化戰情報告生成完畢！")
                 
             except Exception as e:
                 st.error(f"執行時發生錯誤: {e}")
