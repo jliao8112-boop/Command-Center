@@ -2,7 +2,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import datetime
 
 # --- 1. 系統環境與 UI 設定 ---
 st.set_page_config(page_title="量化戰情室", page_icon="⚡", layout="wide")
@@ -43,16 +42,16 @@ def generate_quant_report(stock_id, stock_name, df):
         if current_price > ma20 and ma20 > ma100:
             trend_status = "🟢 強勢多頭排列"
             action_plan = "順勢操作，拉回月線(MA20)附近皆是佈局良機。"
-            sweet_price = round(ma20 * 1.01, 2) # 月線上緣
-            defense_price = round(ma20 * 0.98, 2) # 跌破月線停損
-            target_price = round(current_price * 1.15, 2) # 抓 15% 漲幅
+            sweet_price = round(ma20 * 1.01, 2)
+            defense_price = round(ma20 * 0.98, 2) 
+            target_price = round(current_price * 1.15, 2) 
             timing = "隨時可能發動，注意帶量突破"
         elif current_price < ma20 and ma20 < ma100:
             trend_status = "🔴 弱勢空頭排列"
             action_plan = "空方壓制，嚴禁無腦接刀，建議觀望或反彈遇壓作空。"
-            sweet_price = round(current_price * 0.9, 2) # 離現價很遠的摸底價
+            sweet_price = round(current_price * 0.9, 2) 
             defense_price = round(current_price * 0.95, 2)
-            target_price = round(ma20 * 0.98, 2) # 反彈碰到月線就跑
+            target_price = round(ma20 * 0.98, 2) 
             timing = "仍在測底階段，需等待至少 5-8 日量縮築底"
         elif current_price > ma100 and current_price < ma20:
             trend_status = "🟡 回測長線支撐"
@@ -108,7 +107,7 @@ def main():
     st.sidebar.markdown("### 🎯 目標鎖定")
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        m_sid = st.text_input("股票代碼", value="2330").upper()
+        m_sid = st.text_input("股票代碼", value="2330").upper().strip()
     with col2:
         m_name = st.text_input("股票名稱", value="台積電")
 
@@ -117,13 +116,13 @@ def main():
     if st.sidebar.button("🚀 啟動極速推演", use_container_width=True):
         with st.spinner(f"正在擷取 {m_name} 數據，執行量化模型運算..."):
             try:
-                # 抓取數據
+                # 抓取數據：範圍擴大為 200d 以確保 MA100 算完還有足夠資料
                 is_us = any(c.isalpha() for c in m_sid)
                 symbol = m_sid if is_us else f"{m_sid}.TW"
                 
-                df = yf.download(symbol, period="100d", interval="1d", progress=False)
+                df = yf.download(symbol, period="200d", interval="1d", progress=False)
                 if df.empty and not is_us:
-                    df = yf.download(f"{m_sid}.TWO", period="100d", interval="1d", progress=False)
+                    df = yf.download(f"{m_sid}.TWO", period="200d", interval="1d", progress=False)
                 
                 if df.empty:
                     st.error("❌ 查無此股票代碼的數據，請確認後再試。")
@@ -137,6 +136,11 @@ def main():
                 df['MA20'] = df['close'].rolling(window=20).mean()
                 df['MA100'] = df['close'].rolling(window=100).mean()
                 df = df.dropna() # 移除計算均線產生的空值
+                
+                # 🚨 新增防呆機制：確保資料剔除後，還有至少 2 天的資料可以對比
+                if len(df) < 2:
+                    st.error("❌ 該標的歷史掛牌時間不足 100 天，無法計算長線季線 (MA100)，請更換分析標的。")
+                    return
                 
                 # 呼叫量化引擎
                 report = generate_quant_report(m_sid, m_name, df)
