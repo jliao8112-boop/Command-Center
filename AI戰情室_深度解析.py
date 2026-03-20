@@ -85,8 +85,13 @@ def generate_pro_quant_report(stock_id, stock_name, df):
             if risk <= 0: risk = atr 
             target_price = current_price + (risk * 2)
             
-            action_plan = f"趨勢強勢。若現價追價，需承擔 {risk:.2f} 元風險。建議等待拉回至【甜甜價】附近，配合【{vol_status}】的量縮狀態測試支撐再行佈局。"
-            timing = "隨時可能帶量創高，重點觀察突破時是否具備 1.5 倍以上均量。"
+            # 🚀 動態戰術劇本切換 (做多)
+            if current_price < sweet_price:
+                action_plan = f"⚠️ <span style='color:#DC2626; font-weight:bold;'>短線強勢支撐（甜甜價）已失效！</span>目前正退守最後防線。若現價強行進場需承擔 {risk:.2f} 元風險。嚴禁無腦接刀，請觀察是否能在防守價附近出現止跌訊號。"
+                timing = "短線轉弱，需等待重新站回甜甜價，或在防守價附近出現明確止跌反轉訊號。"
+            else:
+                action_plan = f"趨勢強勢。若現價追價，需承擔 {risk:.2f} 元風險。建議等待拉回至【甜甜價】附近，配合【{vol_status}】的量縮狀態測試支撐再行佈局。"
+                timing = "隨時可能帶量創高，重點觀察突破時是否具備 1.5 倍以上均量。"
             
         elif current_price < ma21 and ma21 < ma144:
             trend_status = "🔴 空頭發散 (弱勢)"
@@ -97,8 +102,13 @@ def generate_pro_quant_report(stock_id, stock_name, df):
             if risk <= 0: risk = atr
             target_price = current_price - (risk * 2)
             
-            action_plan = f"空方格局，均線下壓。嚴格禁止逆勢摸底買多。積極者可於反彈至【甜甜價】無力時，順勢佈局空單。"
-            timing = "跌勢未止，需等待至少 1-2 週的底部分型與爆量洗盤訊號。"
+            # 🚀 動態戰術劇本切換 (放空)
+            if current_price > sweet_price:
+                action_plan = f"⚠️ <span style='color:#DC2626; font-weight:bold;'>短線空方壓力（甜甜價）已突破！</span>目前正挑戰最後防線。若現價強行放空需承擔 {risk:.2f} 元風險。請暫緩追空，觀察防守價是否產生壓制。"
+                timing = "短線反彈強勢，需等待重新跌破甜甜價，或在防守價附近出現遇壓長黑訊號。"
+            else:
+                action_plan = f"空方格局，均線下壓。若現價追空需承擔 {risk:.2f} 元風險。嚴禁逆勢摸底買多。建議於反彈至【甜甜價】無力時，順勢佈局空單。"
+                timing = "跌勢未止，需等待至少 1-2 週的底部分型與爆量洗盤訊號。"
             
         else:
             trend_status = "🟡 震盪整理期 (均線糾結)"
