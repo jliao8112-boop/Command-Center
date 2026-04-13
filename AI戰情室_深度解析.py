@@ -1,14 +1,15 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 # --- 1. 系統環境與 UI 設定 ---
-st.set_page_config(page_title="量化戰情室", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="量化戰情室 v36.0 (EMA 旗艦版)", page_icon="⚡", layout="wide")
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&family=Noto+Sans+TC:wght@500;700;900&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&family=Noto+Sans+TC:wght@500;700;900&family=JetBrains+Mono:wght@600;800;900&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', 'Noto Sans TC', sans-serif; }
     
     .ai-header {
@@ -17,37 +18,93 @@ st.markdown("""
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
         border-left: 8px solid #10B981;
     }
-    .report-box {
-        background: #F8FAFC; padding: 20px; border-radius: 12px; border: 1px solid #E2E8F0;
-        font-size: 1rem; line-height: 1.6; color: #1E293B;
+    
+    .price-grid { display: flex; justify-content: space-between; background: #F8FAFC; padding: 20px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #F1F5F9; }
+    .price-box { text-align: center; width: 24%; }
+    .price-label { font-size: 0.85rem; color: #64748B; font-weight: 800; margin-bottom: 6px; }
+    .price-val { font-family: 'JetBrains Mono', monospace; font-size: 1.8rem; font-weight: 900; letter-spacing: -0.5px; }
+    
+    .report-box { background-color: #F8FAFC; padding: 20px; border-radius: 12px; border: 1px solid #E2E8F0; margin-bottom: 20px; }
+    .report-chapter { margin-top: 0; color: #0F172A; font-weight: 900; font-size: 1.2rem; display: flex; align-items: center; gap: 8px; }
+    .report-list { font-size: 0.95rem; color: #334155; padding-left: 20px; line-height: 1.7; }
+    .report-text { font-size: 0.95rem; color: #334155; line-height: 1.7; }
+    
+    @media (max-width: 768px) {
+        .price-grid { flex-wrap: wrap; gap: 15px; }
+        .price-box { width: 48%; }
+        .price-val { font-size: 1.4rem; }
     }
-    .highlight-red { color: #DC2626; font-weight: bold; }
-    .highlight-green { color: #059669; font-weight: bold; }
-    .highlight-blue { color: #2563EB; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# 🚀 升級 1：加入 Streamlit 快取機制 (暫存 60 秒)，大幅降低 Yahoo API 阻擋機率
+# ==========================================
+# ⚡ 零延遲機制：強制刷新
+# ==========================================
+if st.sidebar.button("🔄 強制清除快取 (獲取最新報價)", type="primary", use_container_width=True):
+    st.cache_data.clear()
+    st.sidebar.success("✅ 快取已清除！")
+st.sidebar.divider()
+
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_stock_data(sid, is_us):
     symbol = sid if is_us else f"{sid}.TW"
-    df = yf.download(symbol, period="250d", interval="1d", progress=False)
-    
-    # 若為台股且 .TW 抓不到，嘗試上櫃 .TWO
+    df = yf.download(symbol, period="300d", interval="1d", progress=False)
     if df.empty and not is_us:
         symbol = f"{sid}.TWO"
-        df = yf.download(symbol, period="250d", interval="1d", progress=False)
+        df = yf.download(symbol, period="300d", interval="1d", progress=False)
     return df
 
-# --- 2. 演算法核心：法人級量化模組 ---
+def analyze_intraday_ticks(sid, is_us):
+    """盤中即時大單量測引擎 (使用 1 分K 模擬 Tick 大單淨流向)"""
+    try:
+        if is_us:
+            ticker = str(sid)
+            df_1m = yf.Ticker(ticker).history(period="1d", interval="1m")
+        else:
+            ticker = f"{sid}.TW"
+            df_1m = yf.Ticker(ticker).history(period="1d", interval="1m")
+            if df_1m.empty:
+                ticker = f"{sid}.TWO"
+                df_1m = yf.Ticker(ticker).history(period="1d", interval="1m")
+        
+        if df_1m.empty or len(df_1m) < 5:
+            return "數據不足", 0
+
+        avg_vol_1m = df_1m['Volume'].mean()
+        if avg_vol_1m == 0: return "量能極凍", 0
+        
+        large_threshold = avg_vol_1m * 2
+        large_buys = df_1m[(df_1m['Volume'] > large_threshold) & (df_1m['Close'] > df_1m['Open'])]['Volume'].sum()
+        large_sells = df_1m[(df_1m['Volume'] > large_threshold) & (df_1m['Close'] < df_1m['Open'])]['Volume'].sum()
+        
+        net_large_orders = large_buys - large_sells
+        
+        if net_large_orders > 0 and large_buys > avg_vol_1m * 3:
+            return "🟢 大戶低接 (錯殺洗盤)", net_large_orders
+        elif net_large_orders < 0 and large_sells > avg_vol_1m * 3:
+            return "🔴 大戶倒貨 (真實破線)", net_large_orders
+        else:
+            return "🟡 散戶無序出局", net_large_orders
+            
+    except Exception as e:
+        return "獲取失敗", 0
+
+# --- 2. 演算法核心：全面 EMA 化 ---
 def calculate_professional_indicators(df):
-    """計算均線、均量與 ATR 真實波動"""
-    # 🚀 升級 2：使用 ffill() 填補盤中報價產生的 NaN，不需再依賴易被擋的 fast_info
     df = df.ffill()
     
-    df['MA21'] = df['close'].rolling(window=21).mean()
-    df['MA144'] = df['close'].rolling(window=144).mean()
+    # 🚀 全面切換為 EMA
+    df['EMA8'] = df['close'].ewm(span=8, adjust=False).mean()
+    df['EMA34'] = df['close'].ewm(span=34, adjust=False).mean()
+    df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
+    df['EMA144'] = df['close'].ewm(span=144, adjust=False).mean()
     df['Vol_MA20'] = df['volume'].rolling(window=20).mean()
+    
+    df['BB_Mid'] = df['close'].rolling(window=20).mean()
+    df['BB_Std'] = df['close'].rolling(window=20).std()
+    df['BB_Lower'] = df['BB_Mid'] - 2 * df['BB_Std']
+    df['BB_Upper'] = df['BB_Mid'] + 2 * df['BB_Std']
+    df['BB_Width'] = np.where(df['BB_Mid'] > 0, (df['BB_Upper'] - df['BB_Lower']) / df['BB_Mid'], 0)
     
     df['H-L'] = df['high'] - df['low']
     df['H-PC'] = abs(df['high'] - df['close'].shift(1))
@@ -57,153 +114,252 @@ def calculate_professional_indicators(df):
     
     return df.dropna()
 
-def generate_pro_quant_report(stock_id, stock_name, df):
-    """專業操作邏輯引擎"""
+def generate_pro_quant_report(stock_id, stock_name, df, is_us):
     try:
         latest = df.iloc[-1]
         
-        current_price = latest['close']
-        ma21 = latest['MA21']
-        ma144 = latest['MA144']
-        vol_today = latest['volume']
-        vol_ma20 = latest['Vol_MA20']
-        atr = latest['ATR14']
+        close = float(latest['close'])
+        open_p = float(latest['open'])
+        ema8 = float(latest['EMA8'])
+        ema34 = float(latest['EMA34'])
+        ema21 = float(latest['EMA21'])
+        ema144 = float(latest['EMA144'])
+        vol_today = float(latest['volume'])
+        vol_ma20 = float(latest['Vol_MA20'])
+        atr = float(latest['ATR14'])
+        bb_lower = float(latest['BB_Lower'])
+        bb_width = float(latest['BB_Width'])
         
-        # 量價動能判定
+        curr_sym = "US$" if is_us else "NT$"
+        
+        high_60d = float(df['high'].tail(60).max())
+        drop_from_high = (high_60d - close) / high_60d if high_60d > 0 else 0
+        is_healthy_pullback = drop_from_high <= 0.20
+        
         vol_ratio = vol_today / vol_ma20 if vol_ma20 > 0 else 1
         if vol_ratio >= 1.5: vol_status = "🔥 爆量 (大於均量 1.5 倍)"
         elif vol_ratio <= 0.7: vol_status = "💤 極度量縮 (小於均量 0.7 倍)"
         else: vol_status = "⚖️ 溫和常態量"
 
-        # 專業戰略推演與價位計算
-        if current_price > ma21 and ma21 > ma144:
-            trend_status = "🟢 多頭主升段 (強勢)"
-            defense_price = ma21 - atr
-            sweet_price = ma21 + (atr * 0.5)
-            
-            risk = current_price - defense_price
-            if risk <= 0: risk = atr 
-            target_price = current_price + (risk * 2)
-            
-            # 🚀 動態戰術劇本切換 (做多)
-            if current_price < sweet_price:
-                action_plan = f"⚠️ <span style='color:#DC2626; font-weight:bold;'>短線強勢支撐（甜甜價）已失效！</span>目前正退守最後防線。若現價強行進場需承擔 {risk:.2f} 元風險。嚴禁無腦接刀，請觀察是否能在防守價附近出現止跌訊號。"
-                timing = "短線轉弱，需等待重新站回甜甜價，或在防守價附近出現明確止跌反轉訊號。"
+        is_vcp = (bb_width < 0.12) and (vol_ratio < 0.8)
+        is_high_vol_drop = (close < ema8) and (vol_today > vol_ma20)
+        is_uptrend_aligned = close > ema8 and ema8 > ema34
+
+        tick_status, net_large_vol = analyze_intraday_ticks(stock_id, is_us)
+
+        # 🚀 參照新版多空邏輯判定
+        if is_high_vol_drop:
+            if "大戶倒貨" in tick_status:
+                trend_status = "🔴 破線空頭 (大戶棄守)"
+                action_plan = "爆量跌破且偵測到【大戶倒貨】，主力已撤退，請嚴格執行無條件停損！"
+                timing = f"盤中大單淨流出 {net_large_vol:,.0f}，需等待籌碼徹底沉澱。"
+                def_p, sweet_p, target_p = round(ema34 - atr, 2), round(ema34 * 0.95, 2), round(ema34, 2)
+            elif "大戶低接" in tick_status:
+                trend_status = "🟡 破線洗盤 (大戶承接)"
+                action_plan = "跌破防線但【大戶低接】，極可能是刻意洗盤！防護網放寬，不急於盤中停損。"
+                timing = f"盤中大單淨流入 {net_large_vol:,.0f}，觀察尾盤是否站回防守價再動作。"
+                def_p, sweet_p, target_p = round(ema34 - (atr * 1.5), 2), round(ema34 * 0.98, 2), round(ema34 * 1.05, 2)
             else:
-                action_plan = f"趨勢強勢。若現價追價，需承擔 {risk:.2f} 元風險。建議等待拉回至【甜甜價】附近，配合【{vol_status}】的量縮狀態測試支撐再行佈局。"
-                timing = "隨時可能帶量創高，重點觀察突破時是否具備 1.5 倍以上均量。"
-            
-        elif current_price < ma21 and ma21 < ma144:
-            trend_status = "🔴 空頭發散 (弱勢)"
-            defense_price = ma21 + atr
-            sweet_price = ma21 - (atr * 0.5)
-            
-            risk = defense_price - current_price
-            if risk <= 0: risk = atr
-            target_price = current_price - (risk * 2)
-            
-            # 🚀 動態戰術劇本切換 (放空)
-            if current_price > sweet_price:
-                action_plan = f"⚠️ <span style='color:#DC2626; font-weight:bold;'>短線空方壓力（甜甜價）已突破！</span>目前正挑戰最後防線。若現價強行放空需承擔 {risk:.2f} 元風險。請暫緩追空，觀察防守價是否產生壓制。"
-                timing = "短線反彈強勢，需等待重新跌破甜甜價，或在防守價附近出現遇壓長黑訊號。"
-            else:
-                action_plan = f"空方格局，均線下壓。若現價追空需承擔 {risk:.2f} 元風險。嚴禁逆勢摸底買多。建議於反彈至【甜甜價】無力時，順勢佈局空單。"
-                timing = "跌勢未止，需等待至少 1-2 週的底部分型與爆量洗盤訊號。"
-            
+                trend_status = "🔴 破線空頭 (散戶恐慌)"
+                action_plan = "爆量跌破，大戶未明顯承接，建議先退出觀望。"
+                timing = "需等待量縮止跌與底部分型。"
+                def_p, sweet_p, target_p = round(ema34 - atr, 2), round(ema34 * 0.95, 2), round(ema34, 2)
+            alloc_c, alloc_s, alloc_d = "10%", "30%", "60%"
+        elif is_uptrend_aligned:
+            trend_status = "🟢 右側強勢 (衝刺中)"
+            def_p = round(ema8 - (atr * 0.8), 2)
+            sweet_p = round(ema8 + (atr * 0.3), 2)
+            target_p = round(close + (atr * 3.0), 2)
+            alloc_c, alloc_s, alloc_d = "40%", "40%", "20%"
+            action_plan = "強勢動能軌道，啟動 EMA8 動態追蹤止盈。大盤綠燈時可順勢狙擊。"
+            timing = "隨時可能帶量創高，重點觀察突破時是否具備 1.5 倍以上均量。"
+        elif close > ema34:
+            trend_status = "🟡 震盪整理期"
+            def_p = round(ema34 - (atr * 0.5), 2)
+            sweet_p = round(ema34 * 1.01, 2)
+            target_p = round(close + (atr * 2.5), 2)
+            alloc_c, alloc_s, alloc_d = "20%", "50%", "30%"
+            action_plan = "回測 34EMA 防線。大盤綠黃燈時，若出現下影線且量縮，可於甜甜價伏擊。"
+            timing = "方向收斂中，等待長紅/長黑K棒突破，並伴隨【爆量】訊號以確認新趨勢。"
         else:
-            trend_status = "🟡 震盪整理期 (均線糾結)"
-            defense_price = current_price - (atr * 1.5)
-            sweet_price = min(ma21, ma144)
+            trend_status = "🔴 左側尋底 (弱勢)"
+            sweet_p = round(max(ema144, bb_lower), 2) if ema144 > 0 else bb_lower
+            recent_low = float(df['low'].tail(10).min())
+            def_p = round(min(recent_low, ema34 - atr), 2)
+            target_p = round(ema34, 2)
+            alloc_c, alloc_s, alloc_d = "10%", "60%", "30%"
+            action_plan = f"跌破波段防線。建議等殺盤至 {sweet_p} 附近左側建倉。"
+            timing = "跌勢未止，需等待至少 1-2 週的底部分型與爆量洗盤訊號。"
             
-            risk = current_price - defense_price
-            if risk <= 0: risk = atr
-            target_price = current_price + (risk * 1.5)
-            
-            action_plan = "目前處於趨勢轉換或中繼整理階段。主力籌碼交換中，建議採用【箱型戰法】，跌破防守價嚴格停損，不宜戀戰。"
-            timing = f"方向收斂中，等待長紅/長黑K棒突破，並伴隨【爆量】訊號以確認新趨勢。"
+        base_price = close if close >= def_p else sweet_p
+        risk_val = abs(base_price - def_p)
+        if risk_val <= 0: risk_val = atr
+        reward_val = abs(target_p - base_price)
+        rr_ratio = round(reward_val / risk_val, 2)
 
-        rr_ratio = abs(target_price - current_price) / abs(current_price - defense_price + 0.01)
-
-        # 🚀 同步主系統：動態破線警告防呆機制
-        is_long = target_price > defense_price
-        sweet_display = f"<span class='highlight-blue'>{sweet_price:.2f} 元</span>"
+        # 綜合勝率推算
+        prob = 40
+        if close > ema8: prob += 15
+        elif close > ema34: prob += 5
+        if is_vcp: prob += 15
+        if vol_ratio < 0.8: prob += 10
+        if is_high_vol_drop: prob -= 30
+        if not is_healthy_pullback: prob -= 40
+        prob = min(max(prob, 10), 95)
         
-        if is_long and current_price < sweet_price:
-            sweet_display = f"<span style='text-decoration: line-through; color: #94A3B8;'>{sweet_price:.2f} 元</span> <span style='color: #DC2626; font-weight: bold;'>⚠️ 支撐失效 (破線)</span>"
-        elif not is_long and current_price > sweet_price:
-            sweet_display = f"<span style='text-decoration: line-through; color: #94A3B8;'>{sweet_price:.2f} 元</span> <span style='color: #DC2626; font-weight: bold;'>⚠️ 壓力失效 (突破)</span>"
+        is_volume_breakout = (vol_today > vol_ma20 * 2.5) and (close > open_p)
+        is_wall_intact = close > ema34
 
-        # 組裝專業報告 (全面套用 :.2f 強制過濾多餘小數點)
-        report = f"""
-### 🎯 專業操盤手決策面板
-* **現價：** {current_price:.2f} 元 ({trend_status})
-* **🍯 甜甜價 (合理建倉區)：** {sweet_display}
-* **🛡️ 防守價 (ATR動態停損)：** <span class='highlight-red'>{defense_price:.2f} 元</span>
-* **🚀 目標價 (滿足 1:{rr_ratio:.1f} 盈虧比)：** <span class='highlight-green'>{target_price:.2f} 元</span>
-* **⏳ 發動契機：** {timing}
-
----
-
-### 第一章：波動率與量價結構
-* **ATR 日均波動幅度：** 目前個股每日平均震盪約 **{atr:.2f} 元**。防守價已納入此波動寬容值，防範主力洗盤。
-* **今日量能狀態：** **{vol_status}** (今日成交量：{int(vol_today):,} / 20日均量：{int(vol_ma20):,})。
-* **短線生命線 (MA21)：** {ma21:.2f} 元。
-* **牛熊分界線 (MA144)：** {ma144:.2f} 元。
-
-### 第二章：系統最終戰略指示
-**戰術定調：** {action_plan}
-
-**紀律準則：** 1. 專業交易的核心是【風險控制】。若股價收盤跌破防守價 ({defense_price:.2f} 元)，代表本次戰術推演失效，請無條件撤退。
-2. 目前設定的期望盈虧比為 **1 : {rr_ratio:.1f}**。若到達目標價，建議分批獲利了結，或將停損點上移至成本價，立於不敗之地。
-        """
-        return report
-
+        if is_uptrend_aligned:
+            module_s_status = "🏃‍♂️ <b style='color:#BE123C;'>動能爆發 (啟動追蹤止盈)</b>。主升段加速中。"
+            module_s_action = f"股價已進入強勢區，請將防守線無條件上移至 EMA8 (<b>{ema8:.2f}</b>)，執行『獲利奔跑，跌破即收』戰術。"
+        elif is_volume_breakout:
+            module_s_status = "🔥 <b style='color:#E11D48;'>地基爆量起漲！</b>大戶資金進駐。"
+            module_s_action = f"若買進，將波段生命線 <b>{ema34:.2f}</b> 設為底線，收盤未跌破前絕不賣出。"
+        elif is_wall_intact:
+            module_s_status = "🛡️ <b style='color:#059669;'>承重牆穩固</b>。趨勢持續向上。"
+            module_s_action = f"若已有獲利可執行「3-2 分批停利」。剩下部位死守承重牆 <b>{ema34:.2f}</b>，跌破才結案。"
+        else:
+            module_s_status = "⚠️ <b style='color:#DC2626;'>工程停工 (跌破承重牆)</b>。"
+            module_s_action = f"現價已低於 EMA34 ({ema34:.2f})，波段多頭暫歇，建議資金迴避或嚴格停損。"
+            
+        return {
+            "prob": prob, "rr": rr_ratio, "alloc_c": alloc_c, "alloc_s": alloc_s, "alloc_d": alloc_d,
+            "curr": curr_sym, "price": close, "sweet": sweet_p, "defense": def_p, "target": target_p,
+            "atr": atr, "vol_status": vol_status, "vol_today": vol_today, "vol_ma20": vol_ma20,
+            "ema21": ema21, "ema144": ema144, "ema34": ema34, "ema8": ema8,
+            "trend_status": trend_status, "action_plan": action_plan, "timing": timing, 
+            "module_s_status": module_s_status, "module_s_action": module_s_action,
+            "tick_status": tick_status, "is_healthy_pullback": is_healthy_pullback, "drop_from_high": drop_from_high,
+            "is_high_vol_drop": is_high_vol_drop, "is_uptrend_aligned": is_uptrend_aligned
+        }
     except Exception as e:
-        return f"運算錯誤: {str(e)}"
+        return None
 
-# --- 3. UI 介面 ---
+# --- 3. UI 介面與報告渲染 ---
 def main():
-    st.markdown("<div class='ai-header'><h2 style='margin:0;'>⚡ 量化戰情室：法人級極速推演</h2><p style='margin:0; opacity:0.8;'>搭載 ATR 動態停損、量價動能與 R/R 盈虧比策略，抗 Yahoo 封鎖快取版</p></div>", unsafe_allow_html=True)
+    st.markdown("<div class='ai-header'><h2 style='margin:0;'>⚡ 量化戰情室：法人級極速推演 (EMA 旗艦版)</h2><p style='margin:0; opacity:0.8;'>搭載 EMA 全頻追蹤、大單透視與洗盤防禦系統</p></div>", unsafe_allow_html=True)
 
-    st.sidebar.markdown("### 🎯 目標鎖定")
     col1, col2 = st.sidebar.columns(2)
-    with col1:
-        m_sid = st.text_input("股票代碼", value="1815").upper().strip()
-    with col2:
-        m_name = st.text_input("股票名稱", value="")
-
-    st.sidebar.info("💡 **「抗封鎖模式」**啟動。系統已掛載記憶體快取，確保穩定抓取上櫃與上市即時報價，不再觸發 Rate Limit。")
+    with col1: m_sid = st.text_input("股票代碼", value="1815").upper().strip()
+    with col2: m_name = st.text_input("股票名稱", value="")
 
     if st.sidebar.button("🚀 啟動極速推演", use_container_width=True):
-        with st.spinner(f"正在擷取 {m_name} 數據，執行專業量化模型運算..."):
+        with st.spinner(f"正在擷取 {m_name if m_name else m_sid} 數據，執行專業量化模型運算..."):
             try:
                 is_us = any(c.isalpha() for c in m_sid)
-                
-                # 🚀 呼叫帶有快取機制的抓取函數
                 df = fetch_stock_data(m_sid, is_us)
                 
                 if df.empty:
                     st.error("❌ 查無此股票代碼的數據，請確認後再試。")
                     return
 
-                # 數據整理 (處理 yfinance 回傳的多層級 MultiIndex)
                 df = df.reset_index()
                 df.columns = [col[0].lower() if isinstance(df.columns, pd.MultiIndex) else col.lower() for col in df.columns]
-                
-                # 計算專業指標
                 df = calculate_professional_indicators(df)
                 
-                if len(df) < 2:
+                if df.empty:
                     st.error("❌ 該標的歷史資料不足 (需滿 144 個交易日以建立基準線)，請更換分析標的。")
                     return
                 
-                # 呼叫專業量化引擎
-                report = generate_pro_quant_report(m_sid, m_name, df)
+                res = generate_pro_quant_report(m_sid, m_name, df, is_us)
+                if not res:
+                    st.error("❌ 運算過程發生錯誤，請稍後再試。")
+                    return
                 
-                st.markdown("<div class='report-box'>", unsafe_allow_html=True)
-                st.markdown(report, unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-                st.success("✅ 法人級量化戰情報告生成完畢！")
+                st.success(f"✅ 掃描完成！綜合勝率: **{res['prob']}%** | 盈虧比: **{res['rr']:.2f}**")
+                
+                sweet_val_html = f"{res['curr']}{res['sweet']:.2f}"
+                sweet_label_html = f"🍯 甜甜價 ({res['alloc_s']})"
+                is_long = res['target'] > res['defense']
+                
+                if is_long and res['price'] < res['sweet']:
+                    sweet_val_html = f"<span style='text-decoration: line-through; color: #94A3B8;'>{res['curr']}{res['sweet']:.2f}</span> <span style='color: #DC2626; font-size: 0.85rem;'>⚠️破線</span>"
+                    sweet_label_html = f"<span style='color: #DC2626;'>⚠️ 支撐失效</span> ({res['alloc_s']})"
+                elif not is_long and res['price'] > res['sweet']:
+                    sweet_val_html = f"<span style='text-decoration: line-through; color: #94A3B8;'>{res['curr']}{res['sweet']:.2f}</span> <span style='color: #DC2626; font-size: 0.85rem;'>⚠️突破</span>"
+                    sweet_label_html = f"<span style='color: #DC2626;'>⚠️ 壓力失效</span> ({res['alloc_s']})"
+
+                st.markdown("### 📊 戰術價位分析")
+                price_panel = f"""
+                <div class='price-grid'>
+                <div class='price-box'><div class='price-label'>💎 現價 ({res['alloc_c']})</div><div class='price-val' style='color:#1E40AF;'>{res['curr']}{res['price']:.2f}</div></div>
+                <div class='price-box'><div class='price-label'>{sweet_label_html}</div><div class='price-val' style='color:#D97706;'>{sweet_val_html}</div></div>
+                <div class='price-box'><div class='price-label'>🛡️ 防守價 ({res['alloc_d']})</div><div class='price-val' style='color:#DC2626;'>{res['curr']}{res['defense']:.2f}</div></div>
+                <div class='price-box'><div class='price-label'>🎯 目標價</div><div class='price-val' style='color:#059669;'>{res['curr']}{res['target']:.2f}</div></div>
+                </div>
+                """
+                st.markdown(price_panel, unsafe_allow_html=True)
+                
+                # ==========================================
+                # 🚀 終極改寫機制：偵測致命風險並重構報告
+                # ==========================================
+                has_major_risk = ("大戶倒貨" in res.get('tick_status', '')) or (not res.get('is_healthy_pullback', True)) or res.get('is_high_vol_drop', False)
+
+                if has_major_risk:
+                    ch2_trend = "🚨 高度風險 (危險訊號浮現)"
+                    ch2_tactics = "<span style='color:#DC2626; font-weight:bold;'>絕對禁止現價盲目進場！</span>主力出現派發跡象，籌碼極度不穩。"
+                    ch2_timing = "需等待籌碼徹底沉澱，或連續3日站穩均線化解賣壓。"
+                    ch2_discipline = f"強烈建議空手觀望。若已持倉，將防守價<b style='color:#DC2626;'>極限上移至 EMA8 ({res['ema8']:.2f})</b>，跌破無條件市價撤退！"
+                    
+                    module_s_status = "⚠️ <b style='color:#DC2626;'>警報響起 (籌碼與技術背離)</b>。隨時可能反轉下殺。"
+                    module_s_action = f"放棄原波段防守。立刻執行「觸價即砍」，跌破 <b>{res['ema8']:.2f}</b> 全數結清，絕不留戀。"
+                    
+                    risk_warnings = []
+                    if "大戶倒貨" in res.get('tick_status', ''): risk_warnings.append("● 盤中偵測到【大戶倒貨】，反彈逢高派發，籌碼正在流向散戶。")
+                    if not res.get('is_healthy_pullback', True): risk_warnings.append(f"● 距離近期高點已重挫 {res.get('drop_from_high',0)*100:.1f}%，上方套牢冤魂多，慎防A轉逃命波。")
+                    if res.get('is_high_vol_drop', False): risk_warnings.append("● 爆量跌破短均線，短線賣壓沉重。")
+                    
+                    risk_html = f"""
+<hr style="border-top: 2px dashed #DC2626; margin: 15px 0;">
+<h4 style="margin-top: 0; color: #DC2626;">🚨 第四章：極端風險與洗盤對策 (紅燈警戒)</h4>
+<div style="background-color: #FEF2F2; border-left: 5px solid #DC2626; padding: 12px; border-radius: 4px; font-size: 0.9rem; color: #7F1D1D; line-height: 1.6;">
+    <b>⚠️ 致命風險警告：</b><br>
+    {'<br>'.join(risk_warnings)}<br><br>
+    <b>🛑 嚴格紀律操作：</b><br>
+    1. <b>空手者：</b> 絕對禁止現價買進！切勿試圖接刀或貪圖反彈。<br>
+    2. <b>持倉者：</b> 建議立即減碼 1/2。剩餘部位死守 EMA8 (<b>{res['ema8']:.2f}</b>)。<br><br>
+    <b>🔄 洗盤應對劇本 (若為主力誘空)：</b><br>
+    若這是一場殘酷的洗盤，股價必須在 3 日內帶量強勢站回 EMA21 (<b>{res['ema21']:.2f}</b>) 且大單翻紅。空手者請耐心等待「右側確認」後再行進場，寧可錯過，絕不接刀。
+</div>
+"""
+                else:
+                    ch2_trend = res['trend_status']
+                    ch2_tactics = res['action_plan']
+                    ch2_timing = res['timing']
+                    ch2_discipline = f"跌破防守價 <b>({res['defense']:.2f})</b> 無條件撤退。期望盈虧比 <b>1:{res['rr']:.2f}</b>。"
+                    module_s_status = res['module_s_status']
+                    module_s_action = res['module_s_action']
+                    risk_html = "" 
+
+                report_html = f"""
+<div class='report-box'>
+<h4 class='report-chapter'>📖 第一章：波動率與量價結構</h4>
+<ul class='report-list'>
+    <li><b>ATR 日均波動：</b> 約 <b>{res['atr']:.2f} 元</b>。防護網已納入此寬容值以防洗盤。</li>
+    <li><b>今日量能狀態：</b> <b>{res['vol_status']}</b><br>(成交: {int(res['vol_today']):,} / 均量: {int(res['vol_ma20']):,})</li>
+    <li><b>盤中大單監控：</b> <b style="color:#D97706;">{res.get('tick_status', '無')}</b></li>
+    <li><b>短線生命線 (EMA21)：</b> {res['ema21']:.2f} 元。</li>
+    <li><b>牛熊分界線 (EMA144)：</b> {res['ema144']:.2f} 元。</li>
+</ul>
+<hr style='border-top: 1px solid #E2E8F0; margin: 20px 0;'>
+<h4 class='report-chapter'>📖 第二章：系統最終戰略指示 ({ch2_trend})</h4>
+<div class='report-text'>
+    <p style='margin-bottom: 10px;'><b>🎯 戰術定調：</b> {ch2_tactics}</p>
+    <p style='margin-bottom: 10px;'><b>⏳ 發動契機：</b> {ch2_timing}</p>
+    <p style='margin-bottom: 0;'><b>⚠️ 紀律準則：</b> {ch2_discipline}</p>
+</div>
+<hr style='border-top: 1px solid #E2E8F0; margin: 20px 0;'>
+<h4 class='report-chapter'>🏗️ 第三章：模組 S (波段承重牆)</h4>
+<ul class='report-list' style='margin-bottom: 0;'>
+    <li><b>波段生命線 (EMA34)：</b> <span style='color:#DC2626; font-weight:bold;'>{res['ema34']:.2f} 元</span></li>
+    <li><b>模組狀態：</b> {module_s_status}</li>
+    <li><b>執行紀律：</b> {module_s_action}</li>
+</ul>
+{risk_html}
+</div>
+"""
+                st.markdown(report_html, unsafe_allow_html=True)
                 
             except Exception as e:
                 st.error(f"執行時發生錯誤: {e}")
