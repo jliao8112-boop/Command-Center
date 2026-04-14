@@ -179,7 +179,7 @@ def generate_pro_quant_report(stock_id, stock_name, df, is_us):
             sweet_p = round(ema34 * 1.01, 2)
             target_p = round(close + (atr * 2.5), 2)
             alloc_c, alloc_s, alloc_d = "20%", "50%", "30%"
-            action_plan = "回測 34EMA 防線。大盤綠黃燈時，若出現下影線且量縮，可於甜甜價伏擊。"
+            action_plan = "回測 34EMA 防線。大盤綠黃燈時，若出現下影線且量縮，可於伏擊區試單。"
             timing = "方向收斂中，等待長紅/長黑K棒突破，並伴隨【爆量】訊號以確認新趨勢。"
         else:
             trend_status = "🔴 左側尋底 (弱勢)"
@@ -188,7 +188,7 @@ def generate_pro_quant_report(stock_id, stock_name, df, is_us):
             def_p = round(min(recent_low, ema34 - atr), 2)
             target_p = round(ema34, 2)
             alloc_c, alloc_s, alloc_d = "10%", "60%", "30%"
-            action_plan = f"跌破波段防線。建議等殺盤至 {sweet_p} 附近左側建倉。"
+            action_plan = f"跌破波段防線。建議等殺盤至伏擊區 ({sweet_p}) 附近左側建倉。"
             timing = "跌勢未止，需等待至少 1-2 週的底部分型與爆量洗盤訊號。"
             
         base_price = close if close >= def_p else sweet_p
@@ -205,6 +205,13 @@ def generate_pro_quant_report(stock_id, stock_name, df, is_us):
         if vol_ratio < 0.8: prob += 10
         if is_high_vol_drop: prob -= 30
         if not is_healthy_pullback: prob -= 40
+        
+        # 🚀 戰略重構：盤中籌碼擁有絕對否決權 (強制降評防護機制)
+        if "大戶倒貨" in tick_status:
+            prob -= 40  # 扣減 40 分，確保其絕對無法進入第一線主將清單
+        elif "大戶低接" in tick_status:
+            prob += 10  # 籌碼健康度提升，加分
+            
         prob = min(max(prob, 10), 95)
         
         is_volume_breakout = (vol_today > vol_ma20 * 2.5) and (close > open_p)
@@ -270,7 +277,7 @@ def main():
                 st.success(f"✅ 掃描完成！綜合勝率: **{res['prob']}%** | 盈虧比: **{res['rr']:.2f}**")
                 
                 sweet_val_html = f"{res['curr']}{res['sweet']:.2f}"
-                sweet_label_html = f"🍯 甜甜價 ({res['alloc_s']})"
+                sweet_label_html = f"🍯 伏擊區 ({res['alloc_s']})"
                 is_long = res['target'] > res['defense']
                 
                 if is_long and res['price'] < res['sweet']:
@@ -292,15 +299,15 @@ def main():
                 st.markdown(price_panel, unsafe_allow_html=True)
                 
                 # ==========================================
-                # 🚀 終極改寫機制：偵測致命風險並重構報告
+                # 🚀 終極改寫機制：偵測致命風險並重構報告 (與 v32 戰術指揮官同步)
                 # ==========================================
                 has_major_risk = ("大戶倒貨" in res.get('tick_status', '')) or (not res.get('is_healthy_pullback', True)) or res.get('is_high_vol_drop', False)
 
                 if has_major_risk:
-                    ch2_trend = "🚨 高度風險 (危險訊號浮現)"
-                    ch2_tactics = "<span style='color:#DC2626; font-weight:bold;'>絕對禁止現價盲目進場！</span>主力出現派發跡象，籌碼極度不穩。"
-                    ch2_timing = "需等待籌碼徹底沉澱，或連續3日站穩均線化解賣壓。"
-                    ch2_discipline = f"強烈建議空手觀望。若已持倉，將防守價<b style='color:#DC2626;'>極限上移至 EMA8 ({res['ema8']:.2f})</b>，跌破無條件市價撤退！"
+                    ch2_trend = "🚨 短線動能破壞 (觸發系統防禦機制)"
+                    ch2_tactics = "<span style='color:#DC2626; font-weight:bold;'>系統強制取消買進許可！</span>日線雖偏多，但盤中偵測到主力派發或高檔重挫，短線籌碼已轉弱。"
+                    ch2_timing = "需等待籌碼徹底沉澱，盤中大單重新翻紅且日線收實體紅K。"
+                    ch2_discipline = f"強烈建議空手觀望。若已持倉，將防守極限上移至 EMA8 ({res['ema8']:.2f})，跌破無條件撤退！"
                     
                     module_s_status = "⚠️ <b style='color:#DC2626;'>警報響起 (籌碼與技術背離)</b>。隨時可能反轉下殺。"
                     module_s_action = f"放棄原波段防守。立刻執行「觸價即砍」，跌破 <b>{res['ema8']:.2f}</b> 全數結清，絕不留戀。"
@@ -312,15 +319,15 @@ def main():
                     
                     risk_html = f"""
 <hr style="border-top: 2px dashed #DC2626; margin: 15px 0;">
-<h4 style="margin-top: 0; color: #DC2626;">🚨 第四章：極端風險與洗盤對策 (紅燈警戒)</h4>
+<h4 style="margin-top: 0; color: #DC2626;">🚨 第四章：盤中動能警報與洗盤對策</h4>
 <div style="background-color: #FEF2F2; border-left: 5px solid #DC2626; padding: 12px; border-radius: 4px; font-size: 0.9rem; color: #7F1D1D; line-height: 1.6;">
-    <b>⚠️ 致命風險警告：</b><br>
-    {'<br>'.join(risk_warnings)}<br><br>
-    <b>🛑 嚴格紀律操作：</b><br>
-    1. <b>空手者：</b> 絕對禁止現價買進！切勿試圖接刀或貪圖反彈。<br>
-    2. <b>持倉者：</b> 建議立即減碼 1/2。剩餘部位死守 EMA8 (<b>{res['ema8']:.2f}</b>)。<br><br>
-    <b>🔄 洗盤應對劇本 (若為主力誘空)：</b><br>
-    若這是一場殘酷的洗盤，股價必須在 3 日內帶量強勢站回 EMA21 (<b>{res['ema21']:.2f}</b>) 且大單翻紅。空手者請耐心等待「右側確認」後再行進場，寧可錯過，絕不接刀。
+    <b>⚠️ 系統降評原因 (最高權重)：</b><br>
+    {'<br>'.join(risk_warnings)}<br>
+    <i style="color:#B91C1C;">*系統已強制扣減該標的之綜合勝率，確保其退出第一線主將清單。</i><br><br>
+    <b>🛑 修正後操作指南：</b><br>
+    1. <b>空手者 (取消原伏擊計畫)：</b> 即使股價跌至伏擊區也【嚴禁買進】！因為殺盤動能可能未止。<br>
+    2. <b>右側確認標準 (何時可重新關注)：</b> 必須等待 3 日內盤中大單重新「翻紅」，且日線收出「實體紅K」站回短均線，才視為洗盤結束。<br>
+    3. <b>已持倉者：</b> 建議立即減碼 1/2 以保全戰果，剩餘部位死守 EMA8 (<b>{res['ema8']:.2f}</b>)。
 </div>
 """
                 else:
