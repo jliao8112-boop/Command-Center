@@ -3,6 +3,8 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # --- 1. 系統環境與 UI 設定 ---
 st.set_page_config(page_title="量化戰情室 v36.0 (EMA 旗艦版)", page_icon="⚡", layout="wide")
@@ -89,16 +91,20 @@ def analyze_intraday_ticks(sid, is_us):
     except Exception as e:
         return "獲取失敗", 0
 
-# --- 2. 演算法核心：全面 EMA 化 ---
+# --- 2. 演算法核心：全面 EMA 化 + 傳統 MA 繪圖用 ---
 def calculate_professional_indicators(df):
     df = df.ffill()
     
-    # 🚀 全面切換為 EMA
+    # 🚀 系統核心 EMA
     df['EMA8'] = df['close'].ewm(span=8, adjust=False).mean()
     df['EMA34'] = df['close'].ewm(span=34, adjust=False).mean()
     df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
     df['EMA144'] = df['close'].ewm(span=144, adjust=False).mean()
     df['Vol_MA20'] = df['volume'].rolling(window=20).mean()
+    
+    # 📈 繪圖專用傳統 MA
+    for period in [5, 10, 20, 60, 120, 240]:
+        df[f'MA{period}'] = df['close'].rolling(window=period).mean()
     
     df['BB_Mid'] = df['close'].rolling(window=20).mean()
     df['BB_Std'] = df['close'].rolling(window=20).std()
@@ -206,11 +212,10 @@ def generate_pro_quant_report(stock_id, stock_name, df, is_us):
         if is_high_vol_drop: prob -= 30
         if not is_healthy_pullback: prob -= 40
         
-        # 🚀 戰略重構：盤中籌碼擁有絕對否決權 (強制降評防護機制)
         if "大戶倒貨" in tick_status:
-            prob -= 40  # 扣減 40 分，確保其絕對無法進入第一線主將清單
+            prob -= 40
         elif "大戶低接" in tick_status:
-            prob += 10  # 籌碼健康度提升，加分
+            prob += 10
             
         prob = min(max(prob, 10), 95)
         
@@ -243,13 +248,111 @@ def generate_pro_quant_report(stock_id, stock_name, df, is_us):
     except Exception as e:
         return None
 
-# --- 3. UI 介面與報告渲染 ---
+# --- 4. 視覺化繪製模組 (雙子圖改編) ---
+def plot_combined_chart(df, stock_id, stock_name, show_ma_dict):
+    df = df.copy()
+    
+    # 統一日期格式
+    if 'Date' in df.columns:
+        df['date'] = pd.to_datetime(df['Date'])
+    elif 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'])
+    else:
+        df = df.reset_index()
+        df['date'] = pd.to_datetime(df['Date'] if 'Date' in df.columns else df['date'])
+
+    df = df.sort_values('date').reset_index(drop=True)
+
+    # 修改：改為 2 個子圖，調整高度比例
+    fig = make_subplots(
+        rows=2, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.08, 
+        row_heights=[0.7, 0.3],
+        subplot_titles=(
+            f"{stock_id} {stock_name} 股價走勢", 
+            "成交量",             
+        )
+    )
+
+    # ========== 1. K線 ==========
+    fig.add_trace(go.Candlestick(
+        x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
+        name='K線', increasing_line_color='#ef5350', decreasing_line_color='#26a69a', showlegend=False
+    ), row=1, col=1)
+
+    # ========== 動態均線 ==========
+    ma_colors = {
+        'MA5': '#FFD700', 'MA10': '#00FF00', 'MA20': '#FF69B4', 
+        'MA60': '#9370DB', 'MA120': '#FFA500', 'MA240': '#FF4500'
+    }
+    for ma_name, show in show_ma_dict.items():
+        if show and ma_name in df.columns:
+            valid_ma = df[df[ma_name] > 0]
+            if not valid_ma.empty:
+                fig.add_trace(go.Scatter(
+                    x=valid_ma['date'], y=valid_ma[ma_name],
+                    name=ma_name, line=dict(color=ma_colors.get(ma_name, 'white'), width=1.5),
+                    showlegend=True 
+                ), row=1, col=1)
+
+    # ========== 2. 成交量 ==========
+    if 'volume' in df.columns:
+        vol_colors = ['#ef5350' if c >= o else '#26a69a' for c, o in zip(df['close'], df['open'])]
+        fig.add_trace(go.Bar(
+            x=df['date'], y=df['volume'], 
+            name='成交量', marker_color=vol_colors, showlegend=False
+        ), row=2, col=1)
+        
+    
+    # ========== 日期斷層消除 ==========
+    dt_all = pd.to_datetime(df['date']).dt.date
+    missing_days = [d for d in pd.date_range(dt_all.min(), dt_all.max()).date if d not in set(dt_all)]
+    
+    # 預設顯示區間 (125天)
+    display_days = min(125, len(df))
+    initial_range = [df['date'].iloc[-display_days], df['date'].iloc[-1]]
+    
+    # 修改：高度降為 600
+    fig.update_layout(
+        height=600, 
+        plot_bgcolor='#0e1117', paper_bgcolor='#0e1117', 
+        font=dict(color='white', size=12),
+        hovermode='x unified',
+        margin=dict(l=10, r=10, t=50, b=20),
+        xaxis=dict(
+            rangebreaks=[dict(values=missing_days)],
+            range=initial_range,
+            rangeslider=dict(visible=True, thickness=0.03, bgcolor='#1a1a1a'), 
+            type='date'
+        )
+    )
+    
+    # 修改：只需同步斷層到第 2 個子圖
+    fig['layout']['xaxis2'].update(rangebreaks=[dict(values=missing_days)])
+
+    fig.update_xaxes(showgrid=True, gridcolor='#333')
+    fig.update_yaxes(gridcolor='#333')
+
+    return fig
+
+# --- 5. UI 介面渲染 ---
 def main():
     st.markdown("<div class='ai-header'><h2 style='margin:0;'>⚡ 量化戰情室：法人級極速推演 (EMA 旗艦版)</h2><p style='margin:0; opacity:0.8;'>搭載 EMA 全頻追蹤、大單透視與洗盤防禦系統</p></div>", unsafe_allow_html=True)
 
     col1, col2 = st.sidebar.columns(2)
-    with col1: m_sid = st.text_input("股票代碼", value="1815").upper().strip()
+    with col1: m_sid = st.text_input("股票代碼", value="").upper().strip()
     with col2: m_name = st.text_input("股票名稱", value="")
+
+    st.sidebar.markdown("**📈 圖表均線設定**")
+    show_ma_dict = {
+        'MA5': st.sidebar.checkbox("5日線 (MA5)", value=False),
+        'MA10': st.sidebar.checkbox("10日線 (MA10)", value=False),
+        'MA20': st.sidebar.checkbox("20日線 (MA20)", value=True),
+        'MA60': st.sidebar.checkbox("60日線 (MA60)", value=True),
+        'MA120': st.sidebar.checkbox("120日線 (MA120)", value=False),
+        'MA240': st.sidebar.checkbox("240日線 (MA240)", value=False),
+    }
 
     if st.sidebar.button("🚀 啟動極速推演", use_container_width=True):
         with st.spinner(f"正在擷取 {m_name if m_name else m_sid} 數據，執行專業量化模型運算..."):
@@ -298,9 +401,11 @@ def main():
                 """
                 st.markdown(price_panel, unsafe_allow_html=True)
                 
-                # ==========================================
-                # 🚀 終極改寫機制：偵測致命風險並重構報告 (與 v32 戰術指揮官同步)
-                # ==========================================
+                # 繪製圖表 (併入視覺化模組)
+                st.markdown("### 📈 技術面與籌碼圖表")
+                fig = plot_combined_chart(df, m_sid, m_name, show_ma_dict)
+                st.plotly_chart(fig, use_container_width=True)
+
                 has_major_risk = ("大戶倒貨" in res.get('tick_status', '')) or (not res.get('is_healthy_pullback', True)) or res.get('is_high_vol_drop', False)
 
                 if has_major_risk:
